@@ -14,6 +14,17 @@
     "synthetic_Bad": 0
   },
   "files": {
+    "LICENSE": {
+      "bytes": 11344,
+      "sha256": "689f0c220c9b4e857f35ca7d0dca51397e5a545dc4ad3987438c023e24ff0ab6",
+      "parts": [
+        {
+          "asset": "LICENSE",
+          "bytes": 11344,
+          "sha256": "689f0c220c9b4e857f35ca7d0dca51397e5a545dc4ad3987438c023e24ff0ab6"
+        }
+      ]
+    },
     "config.json": {
       "bytes": 2914,
       "sha256": "a3a130081ee645724607e8a5aa5aee3f35f80fc3688c3a934dc581deccde4519",

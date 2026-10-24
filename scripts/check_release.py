@@ -24,6 +24,8 @@ PUBLIC_FILES = [
     "painter_rl/rethink.py", "painter_rl/local_hints.py", "painter_rl/model_assets.py",
     "configs/local_hints.json", "configs/local_hint_prompt.txt",
     "scripts/prepare_method.py", "tests/test_rethink.py", "tests/test_model_assets.py",
+    "licenses/Qwen3.5-4B-LICENSE",
+    "artifacts/verification.json",
 ]
 PATTERNS = [
     re.compile(r"(?:sk|oc_sk|ghp|gho|github_pat)[_-][A-Za-z0-9_-]{16,}"),

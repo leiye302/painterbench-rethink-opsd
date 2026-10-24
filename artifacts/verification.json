@@ -1,0 +1,25 @@
+{
+  "baseline_commit": "392a5d99beb5edada502ca8806190e9ecc49a703",
+  "initial_clean_linux_CI": "https://github.com/leiye302/painterbench-rethink-opsd/actions/runs/40106550614",
+  "initial_clean_linux_CI_status": "success",
+  "baseline_identical_file_hashes": "baseline.lock.json",
+  "native_processor_audit": {
+    "execution": "CPU only; real released step520 tokenizer/processor and actual pre-action PNGs",
+    "marker_token_id": 248077,
+    "native_prompt_opens_think": true,
+    "valid_pre_action_marker_parse": true,
+    "Student_messages_unchanged": true,
+    "Student_input_tokens": 4344,
+    "static_Teacher_input_tokens": 4356,
+    "local_Teacher_input_tokens": 4374,
+    "actual_pre_action_images": 3,
+    "image_pixel_tensors_identical": true,
+    "paid_API_calls": 0,
+    "optimizer_updates": 0
+  },
+  "limitations": [
+    "Native processor audit is not a 4B forward/backward training test.",
+    "No live hint-provider quality, latency, cost or GPU integration is claimed.",
+    "No completed Stage-2 training or drawing-quality improvement is claimed."
+  ]
+}
