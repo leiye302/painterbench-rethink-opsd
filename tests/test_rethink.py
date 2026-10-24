@@ -1,15 +1,17 @@
 import copy
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 import torch
 
 from painter_rl.actor import QwenActor, Turn
-from painter_rl.local_hints import attach_hints, build_request, read_config, validated_hints
+from painter_rl.local_hints import HintClient, attach_hints, build_request, read_config, validated_hints
 from painter_rl.rethink import marker_id, route_decision, tensor_digest
 
 
@@ -212,6 +214,27 @@ class RouteContracts(unittest.TestCase):
         self.assertEqual(baseline["updates"], 50)
         self.assertEqual(baseline["gate_beta"], 5)
         self.assertEqual(baseline["sdar_coef"], .01)
+
+    def test_concurrent_identical_requests_use_one_API_call_and_no_cache_race(self):
+        root = Path(__file__).resolve().parents[1]
+        config = read_config(root/"configs/local_hints.json")
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            (directory/"trajectory.json").write_text(json.dumps({"finished": True, "turns": []}))
+            turn = turn_at(directory, 0)
+            with patch.dict("os.environ", {"HINT_API_BASE": "https://provider.example/v1",
+                                           "HINT_MODEL": "mock-vision", "HINT_API_KEY": "test-only"}):
+                client = HintClient(config, directory/"cache")
+            def response(payload):
+                time.sleep(.02)
+                return {"hints": [{"decision_index": 0, "hint": "Check the coordinate."}]}
+            with patch.object(client, "_request", side_effect=response) as request:
+                with ThreadPoolExecutor(4) as pool:
+                    answers = list(pool.map(lambda _: client.hints([turn]), range(4)))
+                self.assertEqual(request.call_count, 1)
+            self.assertEqual(sum(a[1] == "api" for a in answers), 1)
+            self.assertEqual(sum(a[1] == "cache_hit" for a in answers), 3)
+            self.assertEqual(len(list((directory/"cache").glob("*.json"))), 1)
 
 
 if __name__ == "__main__":

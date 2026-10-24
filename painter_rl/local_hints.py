@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -105,6 +106,8 @@ class HintClient:
         if url.username or url.password or url.query or url.fragment:
             raise ValueError("API base must not embed credentials, query strings, or fragments")
         self.cache.mkdir(parents=True, exist_ok=True)
+        self._cache_guard = threading.Lock()
+        self._request_locks = {}
 
     def contract(self):
         return {"config": self.config, "prompt_sha256": sha256(self.prompt_path),
@@ -141,14 +144,19 @@ class HintClient:
         digest = hashlib.sha256(json.dumps({"payload": payload, "contract": self.contract()},
                                           ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         path = self.cache / (digest + ".json")
-        if path.exists():
-            raw = json.loads(path.read_text(encoding="utf-8"))
-            status = "cache_hit"
-        else:
-            raw = self._request(payload)
-            validated_hints(raw, indices, cfg["max_hint_chars"])
-            atomic_json(path, raw)
-            status = "api"
+        with self._cache_guard:
+            request_lock = self._request_locks.setdefault(digest, threading.Lock())
+        # Serialize duplicate payloads only. Different trajectories still run
+        # concurrently; one cache key must not race atomic_json's temporary file.
+        with request_lock:
+            if path.exists():
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                status = "cache_hit"
+            else:
+                raw = self._request(payload)
+                validated_hints(raw, indices, cfg["max_hint_chars"])
+                atomic_json(path, raw)
+                status = "api"
         return validated_hints(raw, indices, cfg["max_hint_chars"]), status, digest
 
 
