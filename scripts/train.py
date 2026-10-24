@@ -1,4 +1,4 @@
-"""Train the baseline; no API, Analyzer, RETHINK or private dataset required."""
+"""Train unchanged baseline, or Actor-routed Teacher-only hints when opted in."""
 import argparse
 from pathlib import Path
 import sys
@@ -20,6 +20,10 @@ def main():
     parser.add_argument("--smoke", action="store_true", help="Mark outputs integration-only, not a learning result")
     parser.add_argument("--skip-initial-eval", action="store_true")
     parser.add_argument("--skip-final-eval", action="store_true")
+    parser.add_argument("--method-config", type=Path,
+                        help="Enable Actor-routed local hints, e.g. configs/local_hints.json")
+    parser.add_argument("--hint-cache", type=Path, default=Path("work/hint_cache"),
+                        help="Durable content-addressed hint cache, reuse when resuming")
     args = parser.parse_args()
     from painter_rl.training import train
     train(args)

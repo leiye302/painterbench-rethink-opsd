@@ -1,340 +1,170 @@
-# PainterBench GRPO + OPSD baseline
+# PainterBench RETHINK + GRPO + OPSD
 
-**Status: real Qwen3.5-4B GPU integration verified, including an optimizer update,
-full checkpoint and fresh-process restoration. No long-run learning result is
-claimed.** The 50-update configuration is provided, not already reproduced.
+Stage-2 implementation of **Actor-routed, Teacher-only local hints**, based on
+[PainterBench GRPO + OPSD](https://github.com/leiye302/painterbench-grpo-opsd-baseline)
+at **392a5d99beb5edada502ca8806190e9ecc49a703**.
 
-This project prepares a Qwen3.5-4B baseline for PainterBench's native multi-turn
-drawing tools. GRPO uses the pinned public VAGEN/VERL loss functions; gated OPSD
-uses the pinned SDAR function with `gate_beta=5`. The baseline has no Route-SFT,
-RETHINK, Analyzer or paid API dependency.
+Start the Actor from the supplied natural-only **Route-SFT epoch-2 step520**
+Qwen3.5-4B checkpoint. Whole trajectories receive the original GRPO loss.
+The Teacher gets the original static drawing skill; **only decisions where the
+Actor itself emits `<RETHINK>` get an additional local hint**. The hint writer
+does not classify or veto routing. The Student and evaluation policy never see
+hints or retrospective information.
 
-Validation boundaries:
+## Method versus baseline
 
-| Component | Status |
+| Component | Method |
 | --- | --- |
-| Exact public GRPO and OPSD pure-loss functions | Integrated; source SHA and AST receipts |
-| Grouping, generated-token mask, gradient and microbatch tests | Implemented |
-| Official ViDrA-adapted scoring and shortcut probe | Implemented |
-| Public example images for standalone scoring | Downloadable from pinned public dataset |
-| Qwen3.5 native multimodal training / rollout adapter | Implemented, single process; no stale rollout server |
-| GPU rollout, reward, backward and optimizer update | Real Qwen3.5-4B integration test completed |
-| Full checkpoint and fresh-process restart | SHA-verified; restored token scores exactly match; native drawing executes |
-| Reward's 480-image human-rated test split | Live re-score matches released results; correlation 0.8459 |
-| 50-update training / improved drawing quality | Not demonstrated; do not infer from a smoke test |
+| Initialization | Exact released Route-SFT step520, not base or epoch1 |
+| Routing | Actor-generated special-token ID at the pre-tool boundary |
+| Unmarked decision | Original static-skill Teacher |
+| Marked decision | Static skill + local hint, Teacher only |
+| Failed/missing/unusable hint | Original static-skill Teacher; keep GRPO and route |
+| Teacher | Current Actor, detached scoring of exact sampled response IDs |
+| Reference | Frozen Stage-2 initial policy: step520 here, base for base-start control |
+| Loss | Original public GRPO + SDAR OPSD + reference KL − entropy; beta=5 |
+| Reward/tasks/evaluation/sampling/optimizer | Identical baseline defaults |
 
-Read [related implementations and reward evidence](docs/RELATED_GRPO.md) before
-interpreting the score. The baseline is not an official PainterBench RL recipe.
+No post-action backtracking, replacement Teacher action, Episode Analyzer,
+separate frozen OPSD Teacher, or extra Stage-2 marker BCE is introduced.
+See [METHOD.md](docs/METHOD.md), [baseline diff](docs/BASELINE_DIFF.md),
+and [verification boundaries](docs/VERIFICATION.md).
 
-## Which benchmark and evaluation protocol?
+## Setup and resources
 
-**Benchmark: [PainterBench](https://arxiv.org/abs/2609.34195)**, using its
-[public native environment and stimuli](https://huggingface.co/datasets/painterbench/painterbench/tree/4531f85129c8e40de99981e7602d0e53b9d7c593/painterbench).
-This is **not VAGEN-SVG**, text-to-image prompt following, or reconstruction of
-a reference image. VAGEN/VERL supplies the public GRPO loss, not this benchmark.
+Linux, Python 3.12, Git, and a suitable CUDA GPU are required for training.
+The baseline reference stack is Torch 2.13.0+cu130 / torchvision 0.28.0 and
+`requirements-runtime.txt`. Full FP32 training is preserved: no silent LoRA,
+quantization, precision change or smaller context. Plan **250–300 GiB** durable
+storage including model/assets, latest two full saves, atomic third-save
+headroom and rollout evidence. A baseline short GPU test used approximately
+84 GiB addressable VRAM; full-budget method memory/throughput remains untested.
 
-The Actor observes a starting shape on a 400-by-400 canvas, reasons, calls the
-native drawing tools, observes the updated canvas and continues until it
-finishes or reaches the rollout limit. The task is to create an original
-drawing incorporating the starting stimulus.
-
-| Item | Exact default protocol |
-| --- | --- |
-| Public task bank | All 30 official stimuli: 20 incomplete shapes (`is01`–`is20`) and 10 object transformations (`ot01`–`ot10`) |
-| Actor training tasks | 24 stimuli: the 30-task bank excluding the six held-out IDs below |
-| Actor held-out tasks | `is03,is12,is13,is16,ot02,ot03` (4 incomplete shapes + 2 object transformations) |
-| Split construction | Fixed per-type SHA-256 ordering in [`split_stimuli()`](painter_rl/environment.py); not sampled anew for each run |
-| Evaluation schedule | Before training and every 10 updates, including update 50 |
-| Samples per evaluation | 2 fixed-seed trajectories per held-out task: 12 final canvases total |
-| Sampling / budget | Temperature 1, top-p 1, top-k 0; at most 64 turns, 16,384 new tokens per turn, 32,768 context tokens |
-| Reported scalar | Mean official **ViDrA-adapted** prediction over the 12 actual final canvases; higher predicted creativity is better |
-| Incomplete / failed-tool episodes | Score the last actual canvas too; never drop a trajectory just because it did not finish |
-| Additional records | Per-trajectory score, completion flag, tool errors, reasoning-turn count, full trajectory and final canvas |
-
-The **24/6 split is this repository's fixed RL protocol**, not an official
-PainterBench train/test split or the paper's full benchmark result. Base-model
-and trained-model evaluations use the same six tasks, seeds and budgets.
-The mean reward is a predicted creativity score, **not success rate or action
-accuracy**, and is not DINO/DreamSim similarity to a target image. DINOv2 is the
-feature backbone inside the released reward predictor.
-
-The separate **480-image human-rated scorer test** below checks the frozen
-reward implementation. Those images are neither the Actor's 24 training tasks
-nor its 12 generated evaluation canvases. Held-out Actor tasks also do not
-imply that the public reward model never saw those stimuli.
-
-## Public resources only — no developer-machine dependency
-
-A fresh checkout does **not** need an earlier experiment folder, collected
-trajectories, SFT annotations, a private checkpoint, an Analyzer, or an API key.
-It generates RL trajectories online from the public starting stimuli.
-
-| Required resource | Public source / version | How the setup obtains it |
-| --- | --- | --- |
-| Actor weights, tokenizer and processor | [`Qwen/Qwen3.5-4B`](https://huggingface.co/Qwen/Qwen3.5-4B/tree/851bf6e806efd8d0a36b00ddf55e13ccb7b8cd0a) | `scripts/prepare.py --model-dir models/Qwen3.5-4B` |
-| Environment, canvas, tools, task prompts and 30 stimuli | Pinned public PainterBench release linked above | `scripts/prepare.py --work work` |
-| Unchanged GRPO and SDAR loss functions | Public VERL and SDAR commits pinned in [`sources.lock.json`](sources.lock.json) | The same `scripts/prepare.py` command |
-| ViDrA-adapted head, feature code and DINOv2 backbone | Public PainterBench / Meta assets with fixed SHA-256 values | `scripts/reward_probe.py --work work/reward --prepare-only` |
-| Teacher's static drawing skill | [`configs/static_drawing_skill.txt`](configs/static_drawing_skill.txt), included in this repository | No download or external service |
-| Optional 480-image reward-validation data | Public PainterBench human-rating tables and images | `scripts/validate_reward.py` |
-
-All revisions and asset locations are recorded in `sources.lock.json`;
-preparation verifies pinned source/asset hashes and writes receipts. `models/`,
-`work/`, `runs/` and `checkpoints/` in the commands below are directories created
-on **the reader's own machine**. They are not paths to an existing private
-installation. Internet access is required for first-time public downloads;
-offline execution requires explicitly copying those prepared public assets.
-
-## Standalone GPU setup
-
-The reference runtime uses Linux, Python **3.12**, a CUDA-13-compatible driver,
-Torch **2.13.0+cu130**, torchvision **0.28.0**, and the versions in
-`requirements-runtime.txt`. The short real integration test uses one GPU with
-approximately 84 GiB addressable VRAM. Full 32K-context memory/throughput is **not**
-established by that short test. Smaller GPUs and other kernel stacks require
-their own smoke test; no quantization, LoRA or frozen vision tower is silently
-substituted.
-
-The validated calculation uses **FP32 parameters, compute, gradients and Adam
-states**. An initial BF16 trial showed cached-generation/full-forward
-log-probability differences; FP32 resolves this in the tested path. BF16 or FLA
-acceleration should only be enabled after a separate probability/gradient
-equivalence test. This is a correctness-first single-GPU reference, not a claim
-of optimal throughput.
-
-Provide at least **60 GiB free persistent checkpoint storage per saved update**.
-One 4.54B full FP32 model plus Adam states is about 51 GiB. Default saves at
-10/20/30/40/50 keep **the latest two complete checkpoints** (`keep_last_checkpoints=2`).
-At the end these are updates 40 and 50. A new save is written atomically and
-both retained saves pass full SHA checks **before** an older same-contract
-checkpoint is removed. Partial, foreign-contract and unrelated files are never
-automatically removed. Every retention operation is recorded in the run logs.
-
-The two-checkpoint steady state is about **102 GiB**, but saving the next one
-temporarily needs room for **three**, about **153 GiB**. Budget **250–300 GiB
-total persistent storage** for a clean installation, raw rollout evidence,
-checkpoint write headroom and margin; actual records depend on trajectory
-length. Do not use `/dev/shm` for a durable training run.
-
-Expanded image-input tensors are **not** permanently duplicated to disk.
-Training uses the exact `Turn` tensors kept in memory for the current update.
-The durable audit trail contains lossless observed PNGs (deduplicated within
-each trajectory), prompts/tool history, response token IDs, sampled log
-probabilities, non-image processor inputs and image-tensor shapes/hashes.
-There is no per-turn `turn_*.pt` cache to accumulate across 50 updates.
-Each retained checkpoint additionally contains one small, hash-covered scoring
-fixture for the fresh-process restoration test. No loss, sampling, image
-resolution or training precision changes are made by this storage policy.
-The storage change passed 21 Linux CPU tests, including corrupted-checkpoint
-and symlink retention cases. Replaying two recorded two-turn native rollouts
-with the real Qwen processor reproduced all Student/Teacher input pixels and
-token IDs exactly. Their input audit artifacts shrank from 75,148,740 to
-1,147,363 bytes. This is a measured short-replay saving, not a fixed compression
-ratio promised for every future trajectory.
+Training requires your own **vision-capable, OpenAI-compatible HTTPS hint API**.
+No key or API charge is needed for preparation, CPU tests or evaluation. First
+downloads use GitHub Releases, Hugging Face and Meta's public servers. No private
+host, local experiment folder, Stage-1 annotation corpus or private key is needed.
 
 ```bash
-git clone https://github.com/leiye302/painterbench-grpo-opsd-baseline.git
-cd painterbench-grpo-opsd-baseline
+git clone https://github.com/leiye302/painterbench-rethink-opsd.git
+cd painterbench-rethink-opsd
 python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install torch==2.13.0 torchvision==0.28.0 \
   --index-url https://download.pytorch.org/whl/cu130
 python -m pip install -r requirements-runtime.txt
 
-# Public, pinned sources and model. No private corpus or credentials.
-python scripts/prepare.py --work work --model-dir models/Qwen3.5-4B
+# Native environment, unchanged public GRPO/SDAR functions, and reward.
+python scripts/prepare.py --work work
 python scripts/reward_probe.py --work work/reward --prepare-only
-python -m unittest discover -s tests -v
 
-# Independently reproduce the official head's full test-set result.
-python scripts/validate_reward.py --work work/reward_validation \
-  --assets-work work/reward --rescore 480 --device cuda
+# Public FP32 tensor files, original tokenizer/processor/template; SHA checked.
+python scripts/prepare_method.py --model-dir models/route-sft-step520
+python scripts/prepare_method.py --model-dir models/route-sft-step520 --verify-only
+python -m unittest discover -s tests -v
 ```
 
-Preparation needs internet access to Hugging Face, GitHub and Meta's public
-weight server. After preparation, copy the complete model and `work` caches to
-an offline host if necessary, keeping their receipts and hashes; all paths
-are supplied by arguments, not a developer's local machine.
+The [step520 Release](https://github.com/leiye302/painterbench-rethink-opsd/releases/tag/route-sft-step520-v1)
+contains losslessly split assets (at most 512 MiB each). The downloader verifies
+each part and complete file against `artifacts/route_sft_step520.lock.json`.
+It preserves tensor bytes and marker ID **248077**. Do not substitute the base
+tokenizer or resize embeddings. This is an inference-weight export sufficient
+to initialize Stage 2, **not** a Stage-1 optimizer/RNG resume package. Sanitized
+provenance is provided; private annotations and operational logs are not.
 
-## First: one real integration update
+## Hint API (training only)
+
+```bash
+export HINT_API_BASE="https://your-provider.example/v1"
+export HINT_MODEL="your-vision-capable-model-id"
+read -rsp "Hint API key: " HINT_API_KEY; echo
+export HINT_API_KEY
+```
+
+Use your own values; never commit keys. `env.example` lists the variables.
+The full prompt and structural validation are shipped in
+`configs/local_hint_prompt.txt` and `painter_rl/local_hints.py`.
+`configs/local_hints.json` fixes bounded retries, timeouts, concurrency and
+budgets. One post-rollout request batches a trajectory's triggered decisions;
+up to four trajectory requests run concurrently. Unmarked trajectories make
+no call. Exact requests are content-addressed and cached for resume.
+Malformed/empty/oversized hints or failures fall back to static-skill Teacher;
+no raw error response, request header or key is logged.
+Structural checks do **not** establish a provider's semantic hint quality.
+
+## Integration test, then 50 matched updates
 
 ```bash
 python scripts/train.py \
-  --model models/Qwen3.5-4B --work work --reward-work work/reward \
-  --config configs/smoke.json --output runs/smoke \
-  --checkpoints checkpoints/smoke \
+  --model models/route-sft-step520 --work work --reward-work work/reward \
+  --config configs/smoke.json --method-config configs/local_hints.json \
+  --hint-cache work/hint_cache --output runs/method-smoke \
+  --checkpoints checkpoints/method-smoke \
   --smoke --skip-initial-eval --skip-final-eval
 
 python scripts/verify_restore.py \
-  --checkpoint checkpoints/smoke/update_0001 --run runs/smoke --work work
-```
+  --checkpoint checkpoints/method-smoke/update_0001 \
+  --run runs/method-smoke --work work
 
-The smoke has one group of two trajectories, two turns per trajectory,
-2,048 new-token cap and one optimizer update. Both capped final canvases are
-scored. This verifies wiring, not complete-drawing performance. The restore
-command verifies every file hash, loads optimizer/RNG in a new process, compares
-token scores and executes another native drawing rollout using restored weights.
-
-## Baseline: 50 updates
-
-```bash
 python scripts/train.py \
-  --model models/Qwen3.5-4B --work work --reward-work work/reward \
-  --config configs/baseline.json --output runs/baseline \
-  --checkpoints checkpoints/baseline
+  --model models/route-sft-step520 --work work --reward-work work/reward \
+  --config configs/baseline.json --method-config configs/local_hints.json \
+  --hint-cache work/hint_cache --output runs/method \
+  --checkpoints checkpoints/method
 ```
 
-Each update samples 8 trajectories of the same initial stimulus. The next
-update advances to the next training stimulus, cycling through 24. There is
-one global generated-token-mean update, not one independent update per turn.
-Default rollout limits are 64 turns, 16,384 new tokens per turn and 32,768
-context tokens. Context overflow aborts with evidence; it does not silently
-truncate or discard a member of a GRPO group.
+Defaults remain **50 updates**, 1 group/update, 8 complete trajectories/group,
+64 turns, 16,384 new tokens/turn, 32,768 context, temperature 1. Evaluation and
+full atomic saves occur every 10 updates; keep the latest two verified saves.
+See the [upstream storage/restore details](docs/UPSTREAM_BASELINE.md).
 
-Evaluation runs before training and every 10 updates on fixed held-out stimuli
-`is03,is12,is13,is16,ot02,ot03`, two independent fixed-seed samples each.
-Sampling uses temperature 1, no top-k/top-p truncation or repetition penalty.
-This small deterministic task split is this baseline's protocol, not a claim
-of a standard official PainterBench train/test split. Compare experimental arms
-with the same tasks, seeds, budgets and reward assets.
+For a same-step520 initialization control, omit `--method-config`. For the
+original base-start control, download the pinned base with
+`scripts/prepare.py --work work --model-dir models/Qwen3.5-4B` and run without
+`--method-config`. Initialization and local hints are distinct factors: report
+which comparison you make. The public loss, optimizer and evaluation config
+are unchanged in either case.
 
-Resume into a **new** run directory, from a verified complete checkpoint:
-
-```bash
-python scripts/train.py \
-  --model models/Qwen3.5-4B --work work --reward-work work/reward \
-  --config configs/baseline.json --output runs/baseline-resumed \
-  --checkpoints checkpoints/baseline \
-  --resume checkpoints/baseline/update_0020 --skip-initial-eval
-```
-
-Keep code, full configuration, base hashes, environment and skill unchanged.
-Do not rename a checkpoint to a later update. Partial directories are never
-resumed. A crash during rollout repeats that update from the previous complete
-checkpoint and its recorded seed; failed-attempt evidence remains separate.
-Use one of the two checkpoints still present when resuming; update 20 in the
-example will have been pruned after update 40 is safely saved. Previously
-published runs use a different storage/configuration contract and are not
-silently resumed under this version.
-
-Standalone evaluation of the base and the trained checkpoint on the **same**
-held-out tasks, seeds and budgets (use a fresh output directory for each):
+## Evaluation: no hint API
 
 ```bash
 python scripts/evaluate.py \
-  --model models/Qwen3.5-4B \
-  --work work --reward-work work/reward \
-  --output runs/eval-base --config configs/baseline.json
+  --model models/route-sft-step520 --rethink \
+  --work work --reward-work work/reward --config configs/baseline.json \
+  --output runs/eval-step520
 
 python scripts/evaluate.py \
-  --model checkpoints/baseline/update_0050/model \
-  --work work --reward-work work/reward \
-  --output runs/eval-final --config configs/baseline.json
+  --model checkpoints/method/update_0050/model --rethink \
+  --work work --reward-work work/reward --config configs/baseline.json \
+  --output runs/eval-method-final
 ```
 
-Read `runs/eval-base/evaluation.json` and
-`runs/eval-final/evaluation.json`: `mean_reward` is the aggregate score, `n`
-must be 12 with the default configuration, and `records` contains the
-per-trajectory measurements. The saved canvases permit independent visual
-review; a gain in the optimized reward alone is not a human-quality result.
+The exact baseline held-out IDs are `is03,is12,is13,is16,ot02,ot03`, two fixed-seed
+trajectories each. This **24/6 internal RL split is not an official PainterBench
+train/test split** or its paper's all-30-stimuli × 5 full evaluation. Score every
+actual final canvas, including capped/failed episodes. `mean_reward` is predicted
+creativity, not success rate or human quality ground truth.
+`rethink_turns / turns` is decision-level trigger rate, not token fraction;
+`valid_pre_action_rethink_turns` reports properly placed/parsed triggers separately.
+Keep tasks, seeds, budgets and score implementation identical across arms.
 
-## Why the reward is checked first
+## Resume and validation
 
-PainterBench is open-ended creative drawing, not target-image reconstruction.
-The candidate is **ViDrA-adapted**, not the unadapted ViDrA head and not
-DINO/DreamSim similarity to an arbitrary target image.
+Resume a verified retained checkpoint into a fresh run directory, with the same
+step520 initialization, code, config, prompt, API model and hint-cache path. Never
+resume a partial save or rename an update. The current restored Actor is Teacher;
+the reference stays step520. API failure is a per-decision fallback, not a reason
+to relabel, restart or tune a trigger threshold. See [METHOD.md](docs/METHOD.md).
 
-The original paper reports correlation with human creativity ratings, but that
-does not establish robustness when the score is directly optimized by RL.
-The probe measures score changes after adding random strokes or a grid to
-real drawings. Duplicate images check numerical repeatability. These controls
-are diagnostics, not human creativity ground truth.
-
-All asset revisions and SHA-256 values are in `sources.lock.json`.
-The original-source checkpoint is a trusted, hash-verified pickle; do not
-substitute an untrusted checkpoint.
-
-## Standalone CPU validation
-
-Python **3.13**, Git, at least **8 GiB RAM** (16 GiB recommended), and approximately
-**4 GiB free disk** for the audit environment and DINO backbone. The first run
-downloads public resources. Linux or Windows is supported for these audit
-commands. CPU validation is not a GPU-training test.
+For CPU checks, install a compatible CPU Torch and `requirements-audit.txt`, then:
 
 ```bash
-python -m venv .venv
-# Linux:
-source .venv/bin/activate
-# Windows PowerShell instead:
-# .\.venv\Scripts\Activate.ps1
-
-python -m pip install torch==2.9.1 torchvision==0.24.1 \
-  --index-url https://download.pytorch.org/whl/cpu
-python -m pip install -r requirements-audit.txt
 python -m unittest discover -s tests -v
-
-# Four public final drawings; no private data or local project needed.
-python scripts/reward_probe.py --work work/probe \
-  --public-examples --device cpu --batch-size 2 --cpu-threads 4
-python scripts/visualize_probe.py work/probe/reward_probe.json \
-  --output work/probe/comparison.png
+python scripts/check_release.py
+git diff --check
 ```
 
-PowerShell users can put each command on one line instead of using Bash's `\`
-line continuation. On a CUDA host, use a compatible PyTorch/torchvision build
-and `--device cuda`. The scorer does not silently fall back to an undersized
-CPU container.
-
-`work/probe/reward_probe.json` contains all scores, paired deltas, ink
-correlation and image hashes. Scores are not silently clipped into `[0,1]`.
-The diagnostic deliberately does **not** automatically approve an RL reward.
-
-## Score your own generated trajectories
-
-Supply a directory of records in this small, documented interchange format:
-
-```text
-trajectories/
-  trajectory_0001/
-    complete.json
-    final_painting.png
-  trajectory_0002/
-    complete.json
-    unfinished_painting.png
-```
-
-`complete.json`:
-
-```json
-{"stimulus": "is01", "finished": true, "turns": 12}
-```
-
-For `finished=false`, store the last actual canvas as `unfinished_painting.png`;
-do not omit the trajectory. Input images must be the native 400-by-400 canvas,
-without titles, captions or coordinate overlays.
-
-```bash
-python scripts/reward_probe.py --work work/own-probe \
-  --trajectories path/to/trajectories --limit 32 \
-  --device cpu --batch-size 2 --cpu-threads 4
-```
-
-Selection is deterministic by ID hash, not by score. Raw inputs are never
-overwritten. Derived controls are stored under `--work`.
-
-## Method and scope
-
-See [the baseline contract](docs/BASELINE_CONTRACT.md) for exact grouping,
-masking, Teacher/reference distinction, coefficients, terminal reward handling,
-evaluation scope and the required end-to-end checks.
-
-The implementation extracts named standalone functions from pinned upstream
-files rather than importing an incompatible old multimodal training runtime.
-This preserves the public loss calculation. Environment transport, native-token
-parsing, checkpoint storage and the Transformers runtime are adapters maintained
-here, not unmodified upstream end-to-end training code.
-
-No secret, user-specific server, private corpus, developer-local model path or
-private checkpoint is required by the published preparation, training or
-evaluation commands. See [NOTICE.md](NOTICE.md) for provenance and third-party
-licenses.
+CI uses a clean Linux checkout. Tests do not demonstrate a completed Stage-2
+GPU experiment or improved drawing quality. Provenance and third-party notices:
+[NOTICE.md](NOTICE.md), [sources.lock.json](sources.lock.json),
+[original baseline documentation](docs/UPSTREAM_BASELINE.md).

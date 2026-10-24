@@ -50,7 +50,12 @@ def main():
         from painter_rl.upstream import activate_environment
         activate_environment(args.work)
         processor = AutoProcessor.from_pretrained(args.checkpoint / "model", local_files_only=True)
-        actor = QwenActor(model, processor, config,
+        if "local_hint_method" in contract:
+            from painter_rl.rethink import RethinkActor
+            actor_type = RethinkActor
+        else:
+            actor_type = QwenActor
+        actor = actor_type(model, processor, config,
                          (ROOT / "configs/static_drawing_skill.txt").read_text())
         turns, canvas, episode = actor.rollout(
             args.run / "post_restore_rollout", contract["train_tasks"][0], config["seed"])

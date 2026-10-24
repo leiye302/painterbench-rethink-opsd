@@ -82,7 +82,11 @@ def evaluate(actor, reward, output, tasks, replicas, seed):
             records.append({"stimulus": stimulus, "replica": replica,
                             "turns": len(episode.records), "finished": episode.finished,
                             "tool_errors": sum(r["tool_error_count"] for r in episode.records),
-                            "reasoning_turns": sum(r["reasoning_present"] for r in episode.records)})
+                            "reasoning_turns": sum(r["reasoning_present"] for r in episode.records),
+                            "rethink_turns": sum(bool(r.get("route", {}).get("actor_emitted_marker"))
+                                                 for r in episode.records),
+                            "valid_pre_action_rethink_turns": sum(bool(r.get("route", {}).get("hint_eligible"))
+                                                                  for r in episode.records)})
     reward.to("cuda")
     values = reward.score(paths)
     reward.to("cpu")
@@ -101,6 +105,13 @@ def train(args):
         raise RuntimeError("A CUDA GPU is required; this is not a CPU simulation")
     config = json.loads(args.config.read_text(encoding="utf-8"))
     validate_config(config)
+    hint_client = None
+    method_config = getattr(args, "method_config", None)
+    if method_config:
+        from painter_rl.local_hints import HintClient, read_config
+        from painter_rl.model_assets import verify_initialization
+        initialization = verify_initialization(args.model)
+        hint_client = HintClient(read_config(method_config), args.hint_cache)
     if args.output.exists():
         raise FileExistsError("Choose a fresh output; --resume reads an existing checkpoint separately")
     args.output.mkdir(parents=True)
@@ -113,6 +124,7 @@ def train(args):
     environment = activate_environment(args.work)
     train_tasks, val_tasks = split_stimuli()
     skill_path = ROOT / "configs/static_drawing_skill.txt"
+    processor = AutoProcessor.from_pretrained(args.model, local_files_only=True)
     contract = {"config": config, "base_files": base_manifest(args.model),
                 "source_lock": json.loads((ROOT / "sources.lock.json").read_text()),
                 "environment_receipt": environment, "code": code_manifest(),
@@ -122,6 +134,11 @@ def train(args):
                 "group_unit": "complete_trajectory_same_stimulus",
                 "sampler": {"temperature": 1., "top_p": 1., "top_k": 0,
                             "repetition_penalty": 1.}}
+    if hint_client is not None:
+        contract["local_hint_method"] = hint_client.contract()
+        contract["route_sft_initialization"] = initialization
+        from painter_rl.rethink import marker_id
+        contract["local_hint_method"]["marker_token_id"] = marker_id(processor.tokenizer)
     atomic_json(args.output / "contract.json", contract)
     start = 0
     if args.resume:
@@ -132,7 +149,6 @@ def train(args):
     if shutil.disk_usage(args.checkpoints).free < estimated_checkpoint_bytes:
         raise RuntimeError("Insufficient space for one complete model + Adam checkpoint; "
                            f"need approximately {estimated_checkpoint_bytes / 1024**3:.1f} GiB")
-    processor = AutoProcessor.from_pretrained(args.model, local_files_only=True)
     model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     optimizer = torch.optim.AdamW(model.parameters(), lr=config["learning_rate"],
                                  betas=tuple(config["adam_betas"]),
@@ -140,7 +156,12 @@ def train(args):
     if args.resume:
         if restore_optimizer(args.resume, optimizer) != start:
             raise AssertionError("Optimizer update and checkpoint manifest disagree")
-    actor = QwenActor(model, processor, config, skill_path.read_text())
+    if hint_client is None:
+        actor = QwenActor(model, processor, config, skill_path.read_text())
+    else:
+        from painter_rl.rethink import RethinkActor
+        actor = RethinkActor(model, processor, config, skill_path.read_text())
+        assert actor.marker_token_id == contract["local_hint_method"]["marker_token_id"]
     reward = ViDrAReward(args.reward_work, device="cpu")
     losses = PublicLosses(args.work / "public_sources")
     reference = None
@@ -168,6 +189,11 @@ def train(args):
                                   "replica": replica, "turns": len(turns),
                                   "tokens": sum(t.response.numel() for t in turns),
                                   "finished": episode.finished}), flush=True)
+        if hint_client is not None:
+            from painter_rl.local_hints import attach_hints
+            hint_summary = attach_hints(trajectories, actor, hint_client)
+            atomic_json(args.output / f"hints_{update+1:04d}.json", hint_summary)
+            print(json.dumps({"stage": "local_hints", "update": update+1, **hint_summary}), flush=True)
         reward.to("cuda")
         rewards = reward.score(canvases)
         reward.to("cpu")

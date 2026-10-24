@@ -22,6 +22,7 @@ def main():
     ap.add_argument("--reward-work", type=Path, required=True)
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--config", type=Path, default=ROOT / "configs/baseline.json")
+    ap.add_argument("--rethink", action="store_true", help="Record native Actor marker IDs; no hint API")
     args = ap.parse_args()
     if args.output.exists():
         raise FileExistsError("Refusing to overwrite an evaluation")
@@ -32,7 +33,12 @@ def main():
     activate_environment(args.work)
     model = load_actor(args.model).to("cuda").eval()
     processor = AutoProcessor.from_pretrained(args.model, local_files_only=True)
-    actor = QwenActor(model, processor, config,
+    if args.rethink:
+        from painter_rl.rethink import RethinkActor
+        actor_type = RethinkActor
+    else:
+        actor_type = QwenActor
+    actor = actor_type(model, processor, config,
                       (ROOT / "configs/static_drawing_skill.txt").read_text())
     reward = ViDrAReward(args.reward_work, device="cpu")
     result = evaluate(actor, reward, args.output, split_stimuli()[1],

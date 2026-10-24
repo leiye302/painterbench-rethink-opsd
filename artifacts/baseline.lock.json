@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/leiye302/painterbench-grpo-opsd-baseline",
+  "commit": "392a5d99beb5edada502ca8806190e9ecc49a703",
+  "unchanged_files": {
+    "painter_rl/public_losses.py": "54f741237524692774184885b39f9b43cfd2b644aff734895c7ce15d12269d92",
+    "painter_rl/environment.py": "162a2b04f7b0fd483feaaaa6732cc5e31476b22554772aa8295f36fd464146a3",
+    "painter_rl/rewards.py": "49d515c7db10f4d02c1222291c70e905f6046bd94809d130cbd3b4c3a68258b9",
+    "painter_rl/upstream.py": "72eb09324474ca5d43d43356f282594d4ced81598f6ca23403600b633940bfa3",
+    "painter_rl/checkpoints.py": "06e217b12392d7defb1594b6bed7d8ff18f9bb20e56c01870c23d1d4af1da971",
+    "configs/baseline.json": "7c19b1e75b6aeb4b738615384c6a82e9e02706c135d4c87ed4d3be4c6f781a7c",
+    "configs/smoke.json": "b196b168eac7095024ce1d3a70840d6c5bcd9a2b0dad6106bda95477d0956557",
+    "configs/static_drawing_skill.txt": "436305c88753fbe2ad1edefee29c65074a0bb088504f3b01a8a4ee1754c3ecf1",
+    "sources.lock.json": "13471ccfd05201850e6ae58f2675a282818d1508907636bcc21c3b78fefac0e6",
+    "requirements-runtime.txt": "444f6c7ef286641c0ddaa9b7326937e6f5cb778e461be2a1705d8b37ce45246b",
+    "requirements-audit.txt": "52e0c4c8a6ee48de923d252cfff53926be11e30bde48ab5de1cb982fc726e444"
+  }
+}

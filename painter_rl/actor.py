@@ -163,11 +163,15 @@ class QwenActor:
     def __init__(self, model, processor, config, skill):
         self.model, self.processor, self.config, self.skill = model, processor, config, skill
 
-    def encode(self, messages, tools, teacher=False):
+    def encode(self, messages, tools, teacher=False, local_hint=None):
         from painter_rl.environment import processor_messages
         messages = copy.deepcopy(messages)
         if teacher:
             messages[0]["content"] += "\n\nTraining-only drawing skill:\n" + self.skill
+        if local_hint is not None:
+            if not teacher:
+                raise ValueError("Local hints are Teacher-only")
+            messages[0]["content"] += "\n\nTraining-only local correction hint:\n" + local_hint
         inputs = self.processor.apply_chat_template(
             processor_messages(messages), tools=tools, tokenize=True,
             add_generation_prompt=True, enable_thinking=True,
@@ -176,6 +180,10 @@ class QwenActor:
         if inputs["input_ids"].shape[1] + self.config["max_new_tokens"] > self.config["max_context"]:
             raise RuntimeError("Context budget exceeded; do not silently truncate or drop a group member")
         return inputs
+
+    def capture_route(self, turn, messages, tools, text, directory, index):
+        """Baseline no-op; the method subclass records Actor routing only."""
+        return None
 
     @torch.no_grad()
     def generate(self, inputs, greedy=False):
@@ -223,9 +231,12 @@ class QwenActor:
                 response, sampled, text = self.generate(inputs, greedy)
                 turn = Turn(inputs, teacher_inputs, response, sampled)
                 turns.append(turn)
+                route = self.capture_route(turn, messages, episode.tools, text, directory, i)
                 # Training still uses the exact in-memory tensors, not a reconstruction.
                 save_turn_audit(directory, i, messages, inputs, teacher_inputs, response, sampled)
                 terminal = episode.step(text)
+                if route is not None:
+                    episode.records[-1]["route"] = route
                 atomic_json(Path(directory) / "progress.json",
                             {"turn": i + 1, "response_tokens": response.numel(),
                              "finished": episode.finished})

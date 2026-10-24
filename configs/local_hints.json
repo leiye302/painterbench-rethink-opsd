@@ -1,0 +1,15 @@
+{
+  "schema": "actor_routed_teacher_local_hint_v1",
+  "provider": "openai_compatible",
+  "api_base_env": "HINT_API_BASE",
+  "api_key_env": "HINT_API_KEY",
+  "model_env": "HINT_MODEL",
+  "prompt_file": "configs/local_hint_prompt.txt",
+  "timeout_seconds": 120,
+  "max_retries": 2,
+  "max_inflight_episodes": 4,
+  "temperature": 0.0,
+  "max_output_tokens": 2048,
+  "max_request_text_chars": 240000,
+  "max_hint_chars": 1200
+}
