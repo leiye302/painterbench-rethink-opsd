@@ -33,7 +33,8 @@ def main():
     if not any(m.get("role") == "tool" for m in feedback):
         raise AssertionError("Executed tool feedback missing from next context")
     episode.step('The test operation is complete.</think>\n\n<tool_call>'
-                 '<function=drawing_finished></function></tool_call><|im_end|>')
+                 '<function=drawing_finished><parameter=label>Protocol check dot</parameter>'
+                 '</function></tool_call><|im_end|>')
     if not episode.finished or episode.records[-1]["tool_error_count"]:
         raise AssertionError("Native finish tool did not execute")
     final = episode.finish("cpu_protocol_test")
