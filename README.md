@@ -62,6 +62,7 @@ python scripts/reward_probe.py --work work/reward --prepare-only
 python scripts/prepare_method.py --model-dir models/route-sft-step520
 python scripts/prepare_method.py --model-dir models/route-sft-step520 --verify-only
 python -m unittest discover -s tests -v
+python scripts/check_native_protocol.py --work work --output work/native_protocol_check
 ```
 
 The [step520 Release](https://github.com/leiye302/painterbench-rethink-opsd/releases/tag/route-sft-step520-v1)
@@ -168,3 +169,10 @@ CI uses a clean Linux checkout. Tests do not demonstrate a completed Stage-2
 GPU experiment or improved drawing quality. Provenance and third-party notices:
 [NOTICE.md](NOTICE.md), [sources.lock.json](sources.lock.json),
 [original baseline documentation](docs/UPSTREAM_BASELINE.md).
+
+The native protocol check uses a synthetic RETHINK-prefixed tool response,
+executes the actual PainterBench tool, verifies a changed canvas and feedback,
+and finishes the drawing. It loads no Actor and makes no API request; it is
+not a drawing-quality or learned-RETHINK test. Its lightweight native imports
+require the pinned `pydantic` and `litellm` from `requirements-runtime.txt`
+(the CPU CI installs those explicitly).

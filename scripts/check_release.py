@@ -26,6 +26,7 @@ PUBLIC_FILES = [
     "scripts/prepare_method.py", "tests/test_rethink.py", "tests/test_model_assets.py",
     "licenses/Qwen3.5-4B-LICENSE",
     "artifacts/verification.json",
+    "scripts/check_native_protocol.py",
 ]
 PATTERNS = [
     re.compile(r"(?:sk|oc_sk|ghp|gho|github_pat)[_-][A-Za-z0-9_-]{16,}"),
