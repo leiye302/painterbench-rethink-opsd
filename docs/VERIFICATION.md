@@ -10,6 +10,11 @@ per-trajectory batching; unchanged Student inputs/responses; no neighboring hint
 leak; per-decision fallback; hint schema; native checkpoint processor; model
 asset hashes; public allowlist/privacy scan; clean-checkout CPU CI.
 
+The opt-in MiMo v2 protocol additionally has offline fixtures for 11-decision
+chunking, valid-neighbor retention, bounded per-item retries, null/block/
+truncated responses, explicit-empty abstention, diagnostic redaction and
+partial-cache resume. These do not establish a live MiMo acceptance rate.
+
 Still requiring a real runtime-specific method test:
 
 - Live provider semantic hint accuracy, latency, cost and backend reproducibility.

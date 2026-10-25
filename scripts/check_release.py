@@ -27,6 +27,9 @@ PUBLIC_FILES = [
     "licenses/Qwen3.5-4B-LICENSE",
     "artifacts/verification.json",
     "scripts/check_native_protocol.py",
+    "configs/local_hints_mimo_go.json", "configs/local_hint_prompt_mimo.txt",
+    "docs/HINT_MIMO_GO.md",
+    "painter_rl/hint_protocol.py", "tests/test_hint_protocol.py",
 ]
 PATTERNS = [
     re.compile(r"(?:sk|oc_sk|ghp|gho|github_pat)[_-][A-Za-z0-9_-]{16,}"),

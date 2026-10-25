@@ -75,6 +75,11 @@ provenance is provided; private annotations and operational logs are not.
 
 ## Hint API (training only)
 
+The selected lower-cost profile is **MiMo-V2.6-Pro**; see
+[configuration and billing notes](docs/HINT_MIMO_GO.md). Use
+`--method-config configs/local_hints_mimo_go.json` for that opt-in profile.
+The following generic provider configuration remains supported:
+
 ```bash
 export HINT_API_BASE="https://your-provider.example/v1"
 export HINT_MODEL="your-vision-capable-model-id"
@@ -86,12 +91,18 @@ Use your own values; never commit keys. `env.example` lists the variables.
 The full prompt and structural validation are shipped in
 `configs/local_hint_prompt.txt` and `painter_rl/local_hints.py`.
 `configs/local_hints.json` fixes bounded retries, timeouts, concurrency and
-budgets. One post-rollout request batches a trajectory's triggered decisions;
-up to four trajectory requests run concurrently. Unmarked trajectories make
-no call. Exact requests are content-addressed and cached for resume.
+budgets. The generic provider batches a trajectory's triggered decisions.
+The MiMo profile sends at most four selected decisions per request with a
+2048-token output budget; failed items retry in smaller batches, without
+discarding successful neighbors. Up to four trajectories run concurrently.
+Unmarked trajectories make no call. Content-addressed caches preserve successful
+hints, attempt counts and typed failure diagnostics across an interrupted request.
 Malformed/empty/oversized hints or failures fall back to static-skill Teacher;
 no raw error response, request header or key is logged.
+Explicitly empty hints are reported separately from transport/schema failures.
 Structural checks do **not** establish a provider's semantic hint quality.
+The MiMo v2 protocol changes the recorded code/config contract: use a fresh
+experiment, not a silent hot-swap in an existing training run.
 
 ## Integration test, then 50 matched updates
 

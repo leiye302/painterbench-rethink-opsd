@@ -1,5 +1,7 @@
 import copy
 from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import io
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -7,6 +9,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+import urllib.error
 
 import torch
 
@@ -235,6 +238,182 @@ class RouteContracts(unittest.TestCase):
             self.assertEqual(sum(a[1] == "api" for a in answers), 1)
             self.assertEqual(sum(a[1] == "cache_hit" for a in answers), 3)
             self.assertEqual(len(list((directory/"cache").glob("*.json"))), 1)
+
+    def test_mimo_go_profile_matches_selected_prompt_and_resource_limits(self):
+        root = Path(__file__).resolve().parents[1]
+        cfg = read_config(root/"configs/local_hints_mimo_go.json")
+        generic = read_config(root/"configs/local_hints.json")
+        for key in set(generic) - {"provider", "prompt_file"}:
+            self.assertEqual(cfg[key], generic[key])
+        self.assertEqual(cfg["max_decisions_per_request"], 4)
+        prompt = (root/cfg["prompt_file"]).read_text(encoding="utf-8")
+        self.assertEqual(hashlib.sha256(prompt.encode()).hexdigest(),
+                         "d17fb02199b175a8eabae7be456ba8ebc9ed1d08a3a1ce9df8a94c90e3d1d6cf")
+
+    def test_mimo_go_sends_selected_options_and_own_session_without_logging_key(self):
+        root = Path(__file__).resolve().parents[1]
+        cfg = read_config(root/"configs/local_hints_mimo_go.json")
+        env = {"HINT_API_BASE": "https://opencode.ai/inference/go/openai/v1",
+               "HINT_MODEL": "mimo-v2.6-pro", "HINT_API_KEY": "test-only",
+               "HINT_API_SESSION": "painterbench-method-test"}
+        raw = {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(
+            {"hints": [{"decision_index": 0, "hint": "Keep the existing marks intact."}]})}}]}
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            (directory/"trajectory.json").write_text(json.dumps({"finished": True, "turns": []}))
+            with patch.dict("os.environ", env):
+                client = HintClient(cfg, directory/"cache")
+            with patch("painter_rl.local_hints.urllib.request.urlopen",
+                       return_value=io.BytesIO(json.dumps(raw).encode())) as send:
+                hints, source, digest = client.hints([turn_at(directory, 0)])
+            request = send.call_args.args[0]
+            payload = json.loads(request.data)
+            self.assertEqual(request.get_header("X-opencode-session"), env["HINT_API_SESSION"])
+            self.assertEqual(request.get_header("User-agent"), "painterbench-rethink-opsd/1.0")
+            self.assertEqual(request.get_header("Authorization"), "Bearer test-only")
+            self.assertEqual(payload["model"], "mimo-v2.6-pro")
+            self.assertEqual(payload["max_tokens"], 2048)
+            self.assertEqual(payload["temperature"], 0)
+            self.assertIs(payload["stream"], False)
+            self.assertEqual(payload["thinking"], {"type": "disabled"})
+            self.assertEqual(payload["response_format"], {"type": "json_object"})
+            self.assertEqual(hints[0], "Keep the existing marks intact.")
+            self.assertEqual(source, "api")
+            self.assertNotIn(env["HINT_API_KEY"], json.dumps(client.contract()))
+            self.assertNotIn(env["HINT_API_KEY"], (directory/"cache"/(digest+".json")).read_text())
+
+    def test_mimo_go_rejects_missing_or_unsafe_session_and_wrong_endpoint(self):
+        root = Path(__file__).resolve().parents[1]
+        cfg = read_config(root/"configs/local_hints_mimo_go.json")
+        env = {"HINT_API_BASE": "https://opencode.ai/inference/go/openai/v1",
+               "HINT_MODEL": "mimo-v2.6-pro", "HINT_API_KEY": "test-only"}
+        with tempfile.TemporaryDirectory() as folder:
+            for session in ("", "unsafe\r\nheader", "x"*129):
+                with patch.dict("os.environ", dict(env, HINT_API_SESSION=session)):
+                    with self.assertRaises(ValueError):
+                        HintClient(cfg, Path(folder)/"cache")
+            with patch.dict("os.environ", dict(env, HINT_API_SESSION="valid-run",
+                                              HINT_API_BASE="https://provider.example/v1")):
+                with self.assertRaises(ValueError):
+                    HintClient(cfg, Path(folder)/"cache")
+
+    def test_mimo_go_truncated_response_falls_back_and_preserves_route_and_student(self):
+        root = Path(__file__).resolve().parents[1]
+        cfg = dict(read_config(root/"configs/local_hints_mimo_go.json"), max_retries=0)
+        raw = {"choices": [{"finish_reason": "length", "message": {
+            "content": '{"hints":[{"decision_index":0,"hint":"Do not use this truncated answer."}]}'}}]}
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            (directory/"trajectory.json").write_text(json.dumps({"finished": True, "turns": []}))
+            turn = turn_at(directory, 0)
+            before_student, before_teacher = tensor_digest(turn.inputs), tensor_digest(turn.teacher_inputs)
+            with patch.dict("os.environ", {"HINT_API_BASE": "https://opencode.ai/inference/go/openai/v1",
+                                           "HINT_MODEL": "mimo-v2.6-pro", "HINT_API_KEY": "test-only",
+                                           "HINT_API_SESSION": "test-run"}):
+                client = HintClient(cfg, directory/"cache")
+            with patch("painter_rl.local_hints.urllib.request.urlopen",
+                       return_value=io.BytesIO(json.dumps(raw).encode())):
+                summary = attach_hints([[turn]], FakeActor(), client)
+            self.assertEqual(summary["hints_applied"], 0)
+            self.assertEqual(summary["fallbacks"], 1)
+            self.assertEqual(tensor_digest(turn.inputs), before_student)
+            self.assertEqual(tensor_digest(turn.teacher_inputs), before_teacher)
+            self.assertTrue(turn.route_audit["actor_emitted_marker"])
+            files = list((directory/"cache").glob("*.json"))
+            self.assertEqual(len(files), 1)
+            outcome = json.loads(files[0].read_text())
+            self.assertEqual(outcome["errors"], {"0": "response_truncated"})
+            self.assertEqual(outcome["attempts"][0]["details"]["finish_reason"], "length")
+
+    def test_mimo_partial_validation_retries_only_failed_turn_and_separates_empty(self):
+        root = Path(__file__).resolve().parents[1]
+        cfg = read_config(root/"configs/local_hints_mimo_go.json")
+        seen = []
+        def send(payload):
+            indices = [int(v["text"].split("=", 1)[1].split(";", 1)[0])
+                       for v in payload["messages"][1]["content"]
+                       if v.get("type") == "text" and v["text"].startswith("Selected decision_index=")]
+            seen.append(indices)
+            if len(seen) == 1:
+                return {"hints": [{"decision_index": 0, "hint": "Check the coordinate."},
+                                  {"decision_index": 1, "hint": ""},
+                                  {"decision_index": "2", "hint": "Invalid index."}]}, {}
+            return {"hints": [{"decision_index": 2, "hint": "Keep the existing circle intact."}]}, {}
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            (directory/"trajectory.json").write_text(json.dumps({"turns": [], "finished": True}))
+            turns = [turn_at(directory, i) for i in range(3)]
+            before = [tensor_digest(t.inputs) for t in turns]
+            env = {"HINT_API_BASE": "https://opencode.ai/inference/go/openai/v1",
+                   "HINT_MODEL": "mimo-v2.6-pro", "HINT_API_KEY": "test-only", "HINT_API_SESSION": "test-run"}
+            with patch.dict("os.environ", env):
+                client = HintClient(cfg, directory/"cache")
+            with patch.object(client, "_mimo_request_once", side_effect=send), patch("painter_rl.hint_protocol.time.sleep"):
+                result = attach_hints([turns], FakeActor(), client)
+            self.assertEqual(seen, [[0, 1, 2], [2]])
+            self.assertEqual(result["hints_applied"], 2)
+            self.assertEqual(result["empty_hint_abstentions"], 1)
+            self.assertEqual(result["hint_failures"], 0)
+            for i, t in enumerate(turns):
+                self.assertEqual(tensor_digest(t.inputs), before[i])
+            audit = json.loads((directory/"local_hint_001.json").read_text())
+            self.assertEqual(audit["fallback_reason"], "no_supported_local_hint")
+
+    def test_mimo_concurrent_cache_and_completed_failure_do_not_reissue(self):
+        root = Path(__file__).resolve().parents[1]
+        cfg = dict(read_config(root/"configs/local_hints_mimo_go.json"), max_retries=0)
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder)
+            (directory/"trajectory.json").write_text(json.dumps({"turns": [], "finished": True}))
+            turn = turn_at(directory, 0)
+            env = {"HINT_API_BASE": "https://opencode.ai/inference/go/openai/v1",
+                   "HINT_MODEL": "mimo-v2.6-pro", "HINT_API_KEY": "test-only", "HINT_API_SESSION": "test-run"}
+            with patch.dict("os.environ", env):
+                client = HintClient(cfg, directory/"cache")
+            raw = {"choices": [{"finish_reason": "stop", "message": {"content": None}}]}
+            with patch("painter_rl.local_hints.urllib.request.urlopen",
+                       side_effect=lambda *a, **k: io.BytesIO(json.dumps(raw).encode())) as send:
+                with ThreadPoolExecutor(4) as pool:
+                    results = list(pool.map(lambda _: client.hints([turn]), range(4)))
+                self.assertEqual(send.call_count, 1)
+            self.assertTrue(all(result[0] == {} for result in results))
+            self.assertEqual(sum(result[1] == "api" for result in results), 1)
+            self.assertEqual(sum(result[1] == "cache_hit" for result in results), 3)
+            details = client.diagnostics(results[0][2])[0]
+            self.assertEqual(details["hint_failure_code"], "response_empty_content")
+            self.assertEqual(details["hint_attempts"], 1)
+
+    def test_mimo_transport_logs_only_fixed_codes_not_raw_http_or_network_errors(self):
+        root = Path(__file__).resolve().parents[1]
+        cfg = read_config(root/"configs/local_hints_mimo_go.json")
+        env = {"HINT_API_BASE": "https://opencode.ai/inference/go/openai/v1",
+               "HINT_MODEL": "mimo-v2.6-pro", "HINT_API_KEY": "test-only", "HINT_API_SESSION": "test-run"}
+        from painter_rl.hint_protocol import HintProtocolError
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.dict("os.environ", env):
+                client = HintClient(cfg, Path(folder)/"cache")
+            errors = [(urllib.error.HTTPError("https://private.invalid", 401, "private-error-body", {}, None), "http_401"),
+                      (TimeoutError("private-network-details"), "transport_timeout"),
+                      (urllib.error.URLError("private-network-details"), "transport_error")]
+            for error, expected in errors:
+                with patch("painter_rl.local_hints.urllib.request.urlopen", side_effect=error):
+                    with self.assertRaises(HintProtocolError) as caught:
+                        client._mimo_request_once({"model": "test"})
+                self.assertEqual(caught.exception.code, expected)
+                self.assertNotIn("private", str(caught.exception.details))
+                self.assertNotIn("private", str(caught.exception))
+
+    def test_generic_provider_contract_and_payload_options_remain_unchanged(self):
+        root = Path(__file__).resolve().parents[1]
+        cfg = read_config(root/"configs/local_hints.json")
+        with tempfile.TemporaryDirectory() as folder:
+            with patch.dict("os.environ", {"HINT_API_BASE": "https://provider.example/v1",
+                                           "HINT_MODEL": "mock-vision", "HINT_API_KEY": "test-only"}):
+                client = HintClient(cfg, Path(folder)/"cache")
+            self.assertEqual(client._request_options, {})
+            self.assertEqual(client._provider_headers, {})
+            self.assertNotIn("request_options", client.contract())
+            self.assertNotIn("session_sha256", client.contract())
 
 
 if __name__ == "__main__":
